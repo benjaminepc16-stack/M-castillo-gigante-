@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Castillo Maldito 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        #ui { position: absolute; top: 10px; left: 10px; color: white; text-shadow: 2px 2px #000; pointer-events: none; }
+        #joystick-container { position: absolute; bottom: 20px; left: 20px; width: 100px; height: 100px; background: rgba(255,255,255,0.2); border-radius: 50%; }
+        #msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: red; font-size: 24px; text-align: center; display: none; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div id="stats">Habitaciones: 0/30 | Llaves: 0/5 | Armas: Nivel 1</div>
+        <div id="log">Busca las llaves y evita a los enemigos...</div>
+    </div>
+    <div id="msg"></div>
+    <div id="joystick-container"></div>
+
+    <script type="module">
+        import * as THREE from 'https://cdn.skypack.dev/three@0.136.0';
+
+        // --- CONFIGURACIÓN DEL JUEGO ---
+        let scene, camera, renderer, player;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let keysFound = 0, roomsExplored = 0, weaponLevel = 1;
+        let totalKeys = 5, totalRooms = 30;
+        let items = [], enemies = [], walls = [];
+        let bossActive = false, boss;
+
+        init();
+        animate();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            scene.fog = new THREE.FogExp2(0x050505, 0.15);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Luz ambiental tenue
+            const ambient = new THREE.AmbientLight(0x404040, 0.5);
+            scene.add(ambient);
+
+            // Antorcha del jugador
+            const torch = new THREE.PointLight(0xffaa55, 1, 10);
+            camera.add(torch);
+            scene.add(camera);
+
+            // Generar Castillo (Grilla de 6x5 = 30 habitaciones)
+            const roomSize = 10;
+            for(let z=0; z<5; z++) {
+                for(let x=0; x<6; x++) {
+                    createRoom(x * roomSize, z * roomSize, roomSize);
+                }
+            }
+
+            // Jugador inicial
+            camera.position.set(5, 1.6, 5);
+            
+            // Eventos táctiles simples
+            setupControls();
+            
+            // Colocar items y enemigos aleatorios
+            spawnEntities();
+        }
+
+        function createRoom(x, z, size) {
+            const geo = new THREE.BoxGeometry(size, 4, size);
+            const mat = new THREE.MeshPhongMaterial({ color: 0x444444, side: THREE.BackSide });
+            const room = new THREE.Mesh(geo, mat);
+            room.position.set(x + size/2, 2, z + size/2);
+            scene.add(room);
+            
+            // Paredes (física simple)
+            walls.push(new THREE.Box3().setFromObject(room));
+        }
+
+        function spawnEntities() {
+            // 5 Llaves
+            for(let i=0; i<totalKeys; i++) createItem(0xffff00, 'key');
+            // 3 Armas
+            for(let i=0; i<3; i++) createItem(0x00ffff, 'weapon');
+            // 7 Enemigos
+            for(let i=0; i<7; i++) createEnemy(i + 1);
+        }
+
+        function createItem(color, type) {
+            const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.3), new THREE.MeshPhongMaterial({color}));
+            mesh.position.set(Math.random()*50, 0.5, Math.random()*40);
+            mesh.userData = { type };
+            items.push(mesh);
+            scene.add(mesh);
+        }
+
+        function createEnemy(level) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), new THREE.MeshPhongMaterial({color: 0xff0000}));
+            mesh.position.set(Math.random()*50, 0.9, Math.random()*40);
+            mesh.userData = { level: level, health: level * 20 };
+            enemies.push(mesh);
+            scene.add(mesh);
+        }
+
+        function setupControls() {
+            let touchStart = {x: 0, y: 0};
+            window.addEventListener('touchstart', e => {
+                touchStart.x = e.touches[0].clientX;
+                touchStart.y = e.touches[0].clientY;
+            });
+            window.addEventListener('touchmove', e => {
+                const dx = e.touches[0].clientX - touchStart.x;
+                const dy = e.touches[0].clientY - touchStart.y;
+                
+                // Rotación de cámara
+                camera.rotation.y -= dx * 0.005;
+                // Movimiento (simplificado)
+                if(dy < -10) moveForward = true; else moveForward = false;
+                if(dy > 10) moveBackward = true; else moveBackward = false;
+            });
+            window.addEventListener('touchend', () => { moveForward = false; moveBackward = false; });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (moveForward) camera.translateZ(-0.1);
+            if (moveBackward) camera.translateZ(0.1);
+
+            // Lógica de items y enemigos
+            items.forEach((item, index) => {
+                item.rotation.y += 0.05;
+                if(camera.position.distanceTo(item.position) < 1) {
+                    if(item.userData.type === 'key') {
+                        keysFound++;
+                        document.getElementById('log').innerText = "¡Encontraste una llave!";
+                        if(keysFound === totalKeys) startBossEvent();
+                    } else {
+                        weaponLevel++;
+                        document.getElementById('log').innerText = "¡Arma mejorada!";
+                    }
+                    scene.remove(item);
+                    items.splice(index, 1);
+                    updateUI();
+                }
+            });
+
+            // Lógica del Boss
+            if(bossActive) {
+                const dir = new THREE.Vector3().subVectors(camera.position, boss.position).normalize();
+                boss.position.add(dir.multiplyScalar(0.06));
+                if(camera.position.distanceTo(boss.position) < 1.5) {
+                    document.getElementById('msg').innerText = "TE ATRAPÓ EL GIGANTE\nReiniciando...";
+                    document.getElementById('msg').style.display = "block";
+                    setTimeout(() => location.reload(), 3000);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function startBossEvent() {
+            bossActive = true;
+            document.getElementById('msg').innerText = "¡EL GIGANTE HA DESPERTADO!\n¡BUSCA LA SALIDA!";
+            document.getElementById('msg').style.display = "block";
+            
+            boss = new THREE.Mesh(new THREE.BoxGeometry(2, 5, 2), new THREE.MeshPhongMaterial({color: 0x550000}));
+            boss.position.set(0, 2.5, 0);
+            scene.add(boss);
+            setTimeout(() => { document.getElementById('msg').style.display = "none"; }, 3000);
+        }
+
+        function updateUI() {
+            document.getElementById('stats').innerText = `Habitaciones: 30 | Llaves: ${keysFound}/${totalKeys} | Armas: Nivel ${weaponLevel}`;
+        }
+    </script>
+</body>
+</html>
